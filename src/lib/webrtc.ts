@@ -1,97 +1,133 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { io, Socket } from "socket.io-client";
 
-// Define the shape of the hook's return value for type safety
+// Define the structure for file metadata
+type FileMetadata = {
+  name: string;
+  type: string;
+  size: number;
+};
+
+// Define the shape of the data that the hook will expose to the UI
+export type ReceivedDataType = {
+  type: "text";
+  payload: string;
+} | {
+  type: "file";
+  payload: {
+    metadata: FileMetadata;
+    data: ArrayBuffer;
+  };
+};
+
+// Define the shape of the hook's return value
 interface UseWebRTCReturn {
+  isConnected: boolean;
+  receivedData: ReceivedDataType | null;
   startConnection: (roomId: string) => void;
-  // We will add more functions and state here later (e.g., sendFile, receivedData)
+  sendText: (text: string) => void;
+  sendFile: (file: File) => void;
 }
 
-// A custom hook to encapsulate WebRTC logic
 export function useWebRTC(): UseWebRTCReturn {
   const [socket, setSocket] = useState<Socket | null>(null);
+  const [isConnected, setIsConnected] = useState(false);
+  const [receivedData, setReceivedData] = useState<ReceivedDataType | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const dataChannelRef = useRef<RTCDataChannel | null>(null);
+  const incomingFileMetadataRef = useRef<FileMetadata | null>(null);
 
-  // Effect to initialize and clean up the socket connection
   useEffect(() => {
-    // The path option is important to match our server setup
     const newSocket = io({ path: "/api/socket" });
     setSocket(newSocket);
+    return () => newSocket.disconnect();
+  }, []);
 
-    // Cleanup function to disconnect the socket when the component unmounts
-    return () => {
-      newSocket.disconnect();
-    };
-  }, []); // The empty dependency array means this runs only once
-
-  const startConnection = (roomId: string) => {
-    if (!socket) {
-      console.error("Socket not initialized");
-      return;
+  const sendText = useCallback((text: string) => {
+    if (dataChannelRef.current?.readyState === "open") {
+      const data = { type: "text", payload: text };
+      dataChannelRef.current.send(JSON.stringify(data));
     }
+  }, []);
 
-    console.log(`Starting WebRTC connection for room: ${roomId}`);
+  const sendFile = useCallback((file: File) => {
+    if (dataChannelRef.current?.readyState === "open") {
+      const metadata: FileMetadata = { name: file.name, type: file.type, size: file.size };
+      dataChannelRef.current.send(JSON.stringify({ type: "file-meta", payload: metadata }));
 
-    // 1. Create a new RTCPeerConnection
-    // We'll use public STUN servers from Google to help NAT traversal
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (event.target?.result) {
+          dataChannelRef.current?.send(event.target.result as ArrayBuffer);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    }
+  }, []);
+
+  const handleDataChannelEvents = useCallback((channel: RTCDataChannel) => {
+    channel.onopen = () => setIsConnected(true);
+    channel.onclose = () => setIsConnected(false);
+    channel.onmessage = (event) => {
+      if (typeof event.data === "string") {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "text") {
+          setReceivedData({ type: "text", payload: msg.payload });
+        } else if (msg.type === "file-meta") {
+          incomingFileMetadataRef.current = msg.payload;
+        }
+      } else if (event.data instanceof ArrayBuffer) {
+        if (incomingFileMetadataRef.current) {
+          setReceivedData({
+            type: "file",
+            payload: {
+              metadata: incomingFileMetadataRef.current,
+              data: event.data,
+            },
+          });
+          incomingFileMetadataRef.current = null; // Reset for next file
+        }
+      }
+    };
+  }, []);
+
+  const startConnection = useCallback((roomId: string) => {
+    if (!socket) return;
+
     const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: "stun:stun.l.google.com:19302" },
-        { urls: "stun:stun1.l.google.com:19302" },
-      ],
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
     });
     peerConnectionRef.current = pc;
 
-    // 2. Set up listeners for signaling events from the socket server
+    pc.onicecandidate = (e) => e.candidate && socket.emit("ice-candidate", { candidate: e.candidate, room: roomId });
+    pc.ondatachannel = (e) => {
+      dataChannelRef.current = e.channel;
+      handleDataChannelEvents(e.channel);
+    };
+
     socket.on("peer-joined", () => {
-      console.log("A peer has joined the room. Creating offer...");
-      // The first user (sender) will create an offer
+      const dataChannel = pc.createDataChannel("transfer");
+      dataChannelRef.current = dataChannel;
+      handleDataChannelEvents(dataChannel);
       pc.createOffer()
         .then((offer) => pc.setLocalDescription(offer))
-        .then(() => {
-          if (pc.localDescription) {
-            socket.emit("offer", { sdp: pc.localDescription, room: roomId });
-          }
-        });
+        .then(() => socket.emit("offer", { sdp: pc.localDescription, room: roomId }));
     });
 
-    socket.on("offer", (data: { sdp: RTCSessionDescriptionInit }) => {
-      console.log("Received offer. Creating answer...");
+    socket.on("offer", (data) => {
       pc.setRemoteDescription(new RTCSessionDescription(data.sdp))
         .then(() => pc.createAnswer())
         .then((answer) => pc.setLocalDescription(answer))
-        .then(() => {
-          if (pc.localDescription) {
-            socket.emit("answer", { sdp: pc.localDescription, room: roomId });
-          }
-        });
+        .then(() => socket.emit("answer", { sdp: pc.localDescription, room: roomId }));
     });
 
-    socket.on("answer", (data: { sdp: RTCSessionDescriptionInit }) => {
-      console.log("Received answer.");
-      pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-    });
+    socket.on("answer", (data) => pc.setRemoteDescription(new RTCSessionDescription(data.sdp)));
+    socket.on("ice-candidate", (data) => pc.addIceCandidate(new RTCIceCandidate(data.candidate)));
 
-    socket.on("ice-candidate", (data: { candidate: RTCIceCandidateInit }) => {
-      console.log("Received ICE candidate.");
-      pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-    });
-
-    // 3. Set up listeners for the peer connection itself
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        socket.emit("ice-candidate", {
-          candidate: event.candidate,
-          room: roomId,
-        });
-      }
-    };
-
-    // 4. Join the room
     socket.emit("join-room", roomId);
-  };
+  }, [socket, handleDataChannelEvents]);
 
-  return { startConnection };
+  return { isConnected, receivedData, startConnection, sendText, sendFile };
 }
