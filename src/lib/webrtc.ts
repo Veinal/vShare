@@ -38,11 +38,41 @@ export function useWebRTC(): UseWebRTCReturn {
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const incomingFileMetadataRef = useRef<FileMetadata | null>(null);
+  const roomIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const newSocket = io({ path: "/api/socket" });
     setSocket(newSocket);
-    return () => newSocket.disconnect();
+
+    newSocket.on("peer-joined", () => {
+      if (!peerConnectionRef.current || !roomIdRef.current) return;
+      const dataChannel = peerConnectionRef.current.createDataChannel("transfer");
+      dataChannelRef.current = dataChannel;
+      handleDataChannelEvents(dataChannel);
+      peerConnectionRef.current.createOffer()
+        .then((offer) => peerConnectionRef.current?.setLocalDescription(offer))
+        .then(() => newSocket.emit("offer", { sdp: peerConnectionRef.current?.localDescription, room: roomIdRef.current }));
+    });
+
+    newSocket.on("offer", (data) => {
+      if (!peerConnectionRef.current || !roomIdRef.current) return;
+      peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.sdp))
+        .then(() => peerConnectionRef.current?.createAnswer())
+        .then((answer) => peerConnectionRef.current?.setLocalDescription(answer))
+        .then(() => newSocket.emit("answer", { sdp: peerConnectionRef.current?.localDescription, room: roomIdRef.current }));
+    });
+
+    newSocket.on("answer", (data) => {
+      if (!peerConnectionRef.current) return;
+      peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.sdp));
+    });
+
+    newSocket.on("ice-candidate", (data) => {
+      if (!peerConnectionRef.current) return;
+      peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
+    });
+
+    return () => { newSocket.disconnect(); };
   }, []);
 
   const sendText = useCallback((text: string) => {
@@ -95,6 +125,7 @@ export function useWebRTC(): UseWebRTCReturn {
 
   const startConnection = useCallback((roomId: string) => {
     if (!socket) return;
+    roomIdRef.current = roomId;
 
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
@@ -106,25 +137,6 @@ export function useWebRTC(): UseWebRTCReturn {
       dataChannelRef.current = e.channel;
       handleDataChannelEvents(e.channel);
     };
-
-    socket.on("peer-joined", () => {
-      const dataChannel = pc.createDataChannel("transfer");
-      dataChannelRef.current = dataChannel;
-      handleDataChannelEvents(dataChannel);
-      pc.createOffer()
-        .then((offer) => pc.setLocalDescription(offer))
-        .then(() => socket.emit("offer", { sdp: pc.localDescription, room: roomId }));
-    });
-
-    socket.on("offer", (data) => {
-      pc.setRemoteDescription(new RTCSessionDescription(data.sdp))
-        .then(() => pc.createAnswer())
-        .then((answer) => pc.setLocalDescription(answer))
-        .then(() => socket.emit("answer", { sdp: pc.localDescription, room: roomId }));
-    });
-
-    socket.on("answer", (data) => pc.setRemoteDescription(new RTCSessionDescription(data.sdp)));
-    socket.on("ice-candidate", (data) => pc.addIceCandidate(new RTCIceCandidate(data.candidate)));
 
     socket.emit("join-room", roomId);
   }, [socket, handleDataChannelEvents]);
