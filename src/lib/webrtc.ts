@@ -3,14 +3,16 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { io, Socket } from "socket.io-client";
 
-// Define the structure for file metadata
+// --- Constants ---
+const CHUNK_SIZE = 64 * 1024; // 64 KB
+
+// --- Type Definitions ---
 type FileMetadata = {
   name: string;
   type: string;
   size: number;
 };
 
-// Define the shape of the data that the hook will expose to the UI
 export type ReceivedDataType = {
   type: "text";
   payload: string;
@@ -18,28 +20,40 @@ export type ReceivedDataType = {
   type: "file";
   payload: {
     metadata: FileMetadata;
-    data: ArrayBuffer;
+    data: Blob; // Use Blob for the complete file
   };
 };
 
-// Define the shape of the hook's return value
 interface UseWebRTCReturn {
   isConnected: boolean;
   receivedData: ReceivedDataType | null;
+  transferProgress: number; // To show progress percentage
   startConnection: (roomId: string) => void;
   sendText: (text: string) => void;
   sendFile: (file: File) => void;
 }
 
+// --- Main Hook ---
 export function useWebRTC(): UseWebRTCReturn {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [receivedData, setReceivedData] = useState<ReceivedDataType | null>(null);
+  const [transferProgress, setTransferProgress] = useState(0);
+
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
-  const incomingFileMetadataRef = useRef<FileMetadata | null>(null);
   const roomIdRef = useRef<string | null>(null);
 
+  // Refs for file transfer state
+  const fileToSendRef = useRef<File | null>(null);
+  const sendOffsetRef = useRef<number>(0);
+  
+  const incomingFileMetadataRef = useRef<FileMetadata | null>(null);
+  const incomingFileDataRef = useRef<ArrayBuffer[]>([]);
+  const receivedSizeRef = useRef<number>(0);
+
+
+  // --- Socket & Peer Connection Setup ---
   useEffect(() => {
     const newSocket = io({ path: "/api/socket" });
     setSocket(newSocket);
@@ -75,6 +89,7 @@ export function useWebRTC(): UseWebRTCReturn {
     return () => { newSocket.disconnect(); };
   }, []);
 
+  // --- Data Sending Logic ---
   const sendText = useCallback((text: string) => {
     if (dataChannelRef.current?.readyState === "open") {
       const data = { type: "text", payload: text };
@@ -83,46 +98,105 @@ export function useWebRTC(): UseWebRTCReturn {
   }, []);
 
   const sendFile = useCallback((file: File) => {
-    if (dataChannelRef.current?.readyState === "open") {
-      const metadata: FileMetadata = { name: file.name, type: file.type, size: file.size };
-      dataChannelRef.current.send(JSON.stringify({ type: "file-meta", payload: metadata }));
+    if (dataChannelRef.current?.readyState !== 'open') return;
+    
+    fileToSendRef.current = file;
+    sendOffsetRef.current = 0;
+    setTransferProgress(0);
 
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (event.target?.result) {
-          dataChannelRef.current?.send(event.target.result as ArrayBuffer);
-        }
-      };
-      reader.readAsArrayBuffer(file);
-    }
+    const metadata: FileMetadata = { name: file.name, type: file.type, size: file.size };
+    dataChannelRef.current.send(JSON.stringify({ type: "file-meta", payload: metadata }));
   }, []);
 
+  const sendNextChunk = useCallback(() => {
+    if (!fileToSendRef.current || !dataChannelRef.current || dataChannelRef.current.readyState !== 'open') return;
+
+    const file = fileToSendRef.current;
+    const offset = sendOffsetRef.current;
+
+    if (offset >= file.size) {
+      // All chunks sent
+      fileToSendRef.current = null;
+      return;
+    }
+
+    const chunk = file.slice(offset, offset + CHUNK_SIZE);
+    const reader = new FileReader();
+    
+    reader.onload = (event) => {
+      if (event.target?.result && dataChannelRef.current) {
+        dataChannelRef.current.send(event.target.result as ArrayBuffer);
+        sendOffsetRef.current += chunk.size;
+        setTransferProgress(Math.round((sendOffsetRef.current / file.size) * 100));
+      }
+    };
+    reader.readAsArrayBuffer(chunk);
+  }, []);
+
+  // --- Data Channel Event Handling ---
   const handleDataChannelEvents = useCallback((channel: RTCDataChannel) => {
     channel.onopen = () => setIsConnected(true);
-    channel.onclose = () => setIsConnected(false);
+    channel.onclose = () => {
+      setIsConnected(false);
+      // Reset state on close
+      setTransferProgress(0);
+      incomingFileMetadataRef.current = null;
+      incomingFileDataRef.current = [];
+      receivedSizeRef.current = 0;
+    };
+    
     channel.onmessage = (event) => {
       if (typeof event.data === "string") {
         const msg = JSON.parse(event.data);
-        if (msg.type === "text") {
-          setReceivedData({ type: "text", payload: msg.payload });
-        } else if (msg.type === "file-meta") {
-          incomingFileMetadataRef.current = msg.payload;
+        switch (msg.type) {
+          case "text":
+            setReceivedData({ type: "text", payload: msg.payload });
+            break;
+          case "file-meta":
+            incomingFileMetadataRef.current = msg.payload;
+            incomingFileDataRef.current = [];
+            receivedSizeRef.current = 0;
+            setTransferProgress(0);
+            // Acknowledge metadata and ask for the first chunk
+            channel.send(JSON.stringify({ type: "file-ack" }));
+            break;
+          case "file-ack":
+            // Receiver is ready for the next chunk
+            sendNextChunk();
+            break;
         }
       } else if (event.data instanceof ArrayBuffer) {
         if (incomingFileMetadataRef.current) {
-          setReceivedData({
-            type: "file",
-            payload: {
-              metadata: incomingFileMetadataRef.current,
-              data: event.data,
-            },
-          });
-          incomingFileMetadataRef.current = null; // Reset for next file
+          incomingFileDataRef.current.push(event.data);
+          receivedSizeRef.current += event.data.byteLength;
+
+          const progress = Math.round((receivedSizeRef.current / incomingFileMetadataRef.current.size) * 100);
+          setTransferProgress(progress);
+
+          if (receivedSizeRef.current >= incomingFileMetadataRef.current.size) {
+            // File transfer complete
+            const fileBlob = new Blob(incomingFileDataRef.current, { type: incomingFileMetadataRef.current.type });
+            setReceivedData({
+              type: "file",
+              payload: {
+                metadata: incomingFileMetadataRef.current,
+                data: fileBlob,
+              },
+            });
+            // Reset for next file
+            incomingFileMetadataRef.current = null;
+            incomingFileDataRef.current = [];
+            receivedSizeRef.current = 0;
+          } else {
+            // Acknowledge chunk and ask for the next one
+            channel.send(JSON.stringify({ type: "file-ack" }));
+          }
         }
       }
     };
-  }, []);
+  }, [sendNextChunk]);
 
+  // --- Connection Initialization ---
   const startConnection = useCallback((roomId: string) => {
     if (!socket) return;
     roomIdRef.current = roomId;
@@ -141,5 +215,5 @@ export function useWebRTC(): UseWebRTCReturn {
     socket.emit("join-room", roomId);
   }, [socket, handleDataChannelEvents]);
 
-  return { isConnected, receivedData, startConnection, sendText, sendFile };
+  return { isConnected, receivedData, transferProgress, startConnection, sendText, sendFile };
 }

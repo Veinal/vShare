@@ -25,23 +25,27 @@ const SocketIOHandler = (req: NextApiRequest, res: NextApiResponse & { socket: {
     console.log("A user connected:", socket.id);
 
     socket.on("join-room", (room: string) => {
-      console.log(`User ${socket.id} joining room ${room}`);
-      socket.join(room);
-      socket.to(room).emit("peer-joined", socket.id);
+      const upperCaseRoom = room.toUpperCase();
+      console.log(`User ${socket.id} joining room ${upperCaseRoom}`);
+      socket.join(upperCaseRoom);
+      socket.to(upperCaseRoom).emit("peer-joined", socket.id);
     });
 
     socket.on("offer", (data: { sdp: any; room: string }) => {
-      console.log(`User ${socket.id} sending offer to room ${data.room}`);
-      socket.to(data.room).emit("offer", { sdp: data.sdp, from: socket.id });
+      const upperCaseRoom = data.room.toUpperCase();
+      console.log(`User ${socket.id} sending offer to room ${upperCaseRoom}`);
+      socket.to(upperCaseRoom).emit("offer", { sdp: data.sdp, from: socket.id });
     });
 
     socket.on("answer", (data: { sdp: any; room: string }) => {
-      console.log(`User ${socket.id} sending answer to room ${data.room}`);
-      socket.to(data.room).emit("answer", { sdp: data.sdp, from: socket.id });
+      const upperCaseRoom = data.room.toUpperCase();
+      console.log(`User ${socket.id} sending answer to room ${upperCaseRoom}`);
+      socket.to(upperCaseRoom).emit("answer", { sdp: data.sdp, from: socket.id });
     });
 
     socket.on("ice-candidate", (data: { candidate: any; room: string }) => {
-      socket.to(data.room).emit("ice-candidate", {
+      const upperCaseRoom = data.room.toUpperCase();
+      socket.to(upperCaseRoom).emit("ice-candidate", {
         candidate: data.candidate,
         from: socket.id,
       });

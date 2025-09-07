@@ -4,6 +4,7 @@ import { useState, ChangeEvent } from "react";
 import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress"; // Import Progress
 import { generateSessionCode } from "@/lib/code-generator";
 import { useWebRTC } from "@/lib/webrtc";
 
@@ -11,7 +12,8 @@ export function SenderFlow() {
   const [sessionCode, setSessionCode] = useState<string | null>(null);
   const [textToSend, setTextToSend] = useState("");
   const [fileToSend, setFileToSend] = useState<File | null>(null);
-  const { isConnected, startConnection, sendText, sendFile } = useWebRTC();
+  // Get transferProgress from the hook
+  const { isConnected, transferProgress, startConnection, sendText, sendFile } = useWebRTC();
 
   const handleStartSharing = () => {
     const newCode = generateSessionCode();
@@ -29,13 +31,15 @@ export function SenderFlow() {
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     if (event.target.files && event.target.files[0]) {
       setFileToSend(event.target.files[0]);
+      // Reset progress when a new file is selected
+      // Note: transferProgress is managed in useWebRTC, this is just for UI state if needed
     }
   };
 
   const handleSendFile = () => {
     if (fileToSend) {
       sendFile(fileToSend);
-      setFileToSend(null); // Clear the file input after sending
+      // Don't clear fileToSend here, so we know a file was sent
     }
   };
 
@@ -43,6 +47,8 @@ export function SenderFlow() {
     setSessionCode(null);
     // Proper disconnection logic should be added here later
   };
+  
+  const isTransferring = transferProgress > 0 && transferProgress < 100;
 
   const renderContent = () => {
     if (!sessionCode) {
@@ -58,16 +64,27 @@ export function SenderFlow() {
               placeholder="Type a message..."
               value={textToSend}
               onChange={(e) => setTextToSend(e.target.value)}
+              disabled={isTransferring}
             />
-            <Button onClick={handleSendText} className="w-full">Send Text</Button>
+            <Button onClick={handleSendText} className="w-full" disabled={isTransferring}>Send Text</Button>
           </div>
+
+          {/* File transfer section */}
           <div className="space-y-2">
-            <Input type="file" onChange={handleFileChange} />
-            <Button onClick={handleSendFile} disabled={!fileToSend} className="w-full">
-              Send File
-            </Button>
+            <Input type="file" onChange={handleFileChange} disabled={isTransferring} />
+            {transferProgress > 0 ? (
+              <div className="space-y-2 pt-2">
+                <Progress value={transferProgress} />
+                <p className="text-sm text-muted-foreground">{isTransferring ? `Sending... ${transferProgress}%` : `Sent! 100%`}</p>
+              </div>
+            ) : (
+              <Button onClick={handleSendFile} disabled={!fileToSend || isTransferring} className="w-full">
+                Send File
+              </Button>
+            )}
           </div>
-          <Button variant="secondary" onClick={handleCancel} className="w-full">End Session</Button>
+
+          <Button variant="secondary" onClick={handleCancel} className="w-full" disabled={isTransferring}>End Session</Button>
         </div>
       );
     }

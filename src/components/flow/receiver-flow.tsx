@@ -4,11 +4,13 @@ import { useState } from "react";
 import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress"; // Import Progress
 import { useWebRTC, ReceivedDataType } from "@/lib/webrtc";
 
 export function ReceiverFlow() {
   const [sessionCode, setSessionCode] = useState("");
-  const { isConnected, receivedData, startConnection } = useWebRTC();
+  // Get transferProgress from the hook
+  const { isConnected, receivedData, transferProgress, startConnection } = useWebRTC();
 
   const handleConnect = () => {
     if (sessionCode) {
@@ -19,7 +21,8 @@ export function ReceiverFlow() {
   const handleDownload = (fileData: ReceivedDataType) => {
     if (fileData.type !== "file") return;
 
-    const blob = new Blob([fileData.payload.data], { type: fileData.payload.metadata.type });
+    // The payload data is now a Blob, so we can create a URL directly.
+    const blob = fileData.payload.data;
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -31,6 +34,15 @@ export function ReceiverFlow() {
   };
 
   const renderReceivedData = () => {
+    if (transferProgress > 0 && transferProgress < 100) {
+      return (
+        <div className="w-full space-y-2 pt-2 text-center">
+          <Progress value={transferProgress} />
+          <p className="text-sm text-muted-foreground">Receiving... {transferProgress}%</p>
+        </div>
+      );
+    }
+    
     if (!receivedData) return null;
 
     if (receivedData.type === "text") {
@@ -45,7 +57,7 @@ export function ReceiverFlow() {
     if (receivedData.type === "file") {
       return (
         <div className="w-full rounded-md bg-muted p-4 text-center">
-          <p className="text-sm font-semibold">Received File:</p>
+          <p className="text-sm font-semibold">File Ready:</p>
           <p className="break-words font-mono">{receivedData.payload.metadata.name}</p>
           <Button onClick={() => handleDownload(receivedData)} className="mt-2">
             Download
@@ -62,8 +74,7 @@ export function ReceiverFlow() {
       return (
         <div className="flex w-full flex-col items-center space-y-4 text-center">
           <p className="font-medium text-green-600">✅ Connected!</p>
-          <p className="text-sm text-muted-foreground">Waiting to receive data...</p>
-          {renderReceivedData()}
+          {renderReceivedData() ?? <p className="text-sm text-muted-foreground">Waiting to receive data...</p>}
         </div>
       );
     }
