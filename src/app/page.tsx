@@ -1,5 +1,4 @@
-import { SenderFlow } from "@/components/flow/sender-flow";
-import { ReceiverFlow } from "@/components/flow/receiver-flow";
+import { SessionFlow } from "@/components/flow/session-flow";
 
 export default function Home() {
   return (
@@ -7,13 +6,10 @@ export default function Home() {
       <div className="mb-12 text-center">
         <h1 className="text-5xl font-bold tracking-tight">Welcome to V Share</h1>
         <p className="mt-4 text-lg text-muted-foreground">
-          Instantly share files and links between your devices with ease and security.
+          Instantly share files and text between your devices with ease and security.
         </p>
       </div>
-      <div className="grid w-full max-w-5xl grid-cols-1 items-start gap-12 lg:grid-cols-2">
-        <SenderFlow />
-        <ReceiverFlow />
-      </div>
+      <SessionFlow />
     </main>
   );
 }
