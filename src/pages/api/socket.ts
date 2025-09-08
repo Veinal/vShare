@@ -2,6 +2,19 @@ import { Server as NetServer } from "http";
 import { NextApiRequest, NextApiResponse } from "next";
 import { Server as ServerIO } from "socket.io";
 
+// Define types for WebRTC data to avoid using 'any'
+type RTCSessionDescription = {
+  sdp: string;
+  type: "offer" | "answer" | "pranswer" | "rollback";
+};
+
+type RTCIceCandidate = {
+  candidate: string;
+  sdpMid: string | null;
+  sdpMLineIndex: number | null;
+  usernameFragment: string | null;
+};
+
 export const config = {
   api: {
     bodyParser: false,
@@ -31,19 +44,19 @@ const SocketIOHandler = (req: NextApiRequest, res: NextApiResponse & { socket: {
       socket.to(upperCaseRoom).emit("peer-joined", socket.id);
     });
 
-    socket.on("offer", (data: { sdp: any; room: string }) => {
+    socket.on("offer", (data: { sdp: RTCSessionDescription; room: string }) => {
       const upperCaseRoom = data.room.toUpperCase();
       console.log(`User ${socket.id} sending offer to room ${upperCaseRoom}`);
       socket.to(upperCaseRoom).emit("offer", { sdp: data.sdp, from: socket.id });
     });
 
-    socket.on("answer", (data: { sdp: any; room: string }) => {
+    socket.on("answer", (data: { sdp: RTCSessionDescription; room: string }) => {
       const upperCaseRoom = data.room.toUpperCase();
       console.log(`User ${socket.id} sending answer to room ${upperCaseRoom}`);
       socket.to(upperCaseRoom).emit("answer", { sdp: data.sdp, from: socket.id });
     });
 
-    socket.on("ice-candidate", (data: { candidate: any; room: string }) => {
+    socket.on("ice-candidate", (data: { candidate: RTCIceCandidate; room: string }) => {
       const upperCaseRoom = data.room.toUpperCase();
       socket.to(upperCaseRoom).emit("ice-candidate", {
         candidate: data.candidate,

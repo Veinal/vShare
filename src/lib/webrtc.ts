@@ -52,56 +52,9 @@ export function useWebRTC(): UseWebRTCReturn {
   const incomingFileRef = useRef<{ id: string; metadata: FileMetadata; data: ArrayBuffer[] } | null>(null);
   const receivedSizeRef = useRef<number>(0);
 
-  useEffect(() => {
-    const newSocket = io({ path: "/api/socket" });
-    setSocket(newSocket);
-
-    newSocket.on("peer-joined", () => {
-      if (!peerConnectionRef.current || !roomIdRef.current) return;
-      const dataChannel = peerConnectionRef.current.createDataChannel("transfer");
-      dataChannelRef.current = dataChannel;
-      handleDataChannelEvents(dataChannel);
-      peerConnectionRef.current.createOffer()
-        .then((offer) => peerConnectionRef.current?.setLocalDescription(offer))
-        .then(() => newSocket.emit("offer", { sdp: peerConnectionRef.current?.localDescription, room: roomIdRef.current }));
-    });
-
-    newSocket.on("offer", (data) => {
-      if (!peerConnectionRef.current || !roomIdRef.current) return;
-      peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.sdp))
-        .then(() => peerConnectionRef.current?.createAnswer())
-        .then((answer) => peerConnectionRef.current?.setLocalDescription(answer))
-        .then(() => newSocket.emit("answer", { sdp: peerConnectionRef.current?.localDescription, room: roomIdRef.current }));
-    });
-
-    newSocket.on("answer", (data) => { if (!peerConnectionRef.current) return; peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.sdp)); });
-    newSocket.on("ice-candidate", (data) => { if (!peerConnectionRef.current) return; peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(data.candidate)); });
-
-    return () => { newSocket.disconnect(); };
-  }, []);
-
   const updateProgress = (id: string, progress: number) => {
     setTransferProgress(prev => ({ ...prev, [id]: progress }));
   };
-
-  const sendText = useCallback((text: string) => {
-    if (dataChannelRef.current?.readyState !== "open") return;
-    const id = Date.now().toString();
-    const newTextItem: HistoryItem = { id, direction: "sent", type: "text", payload: text };
-    setHistory(prev => [newTextItem, ...prev]);
-    dataChannelRef.current.send(JSON.stringify({ type: "text", payload: text, id }));
-  }, []);
-
-  const sendFile = useCallback((file: File) => {
-    if (dataChannelRef.current?.readyState !== 'open') return;
-    const id = Date.now().toString();
-    fileToSendRef.current = { file, id };
-    sendOffsetRef.current = 0;
-    updateProgress(id, 0);
-
-    const metadata: FileMetadata = { name: file.name, type: file.type, size: file.size };
-    dataChannelRef.current.send(JSON.stringify({ type: "file-meta", payload: metadata, id }));
-  }, []);
 
   const sendNextChunk = useCallback(() => {
     if (!fileToSendRef.current || !dataChannelRef.current || dataChannelRef.current.readyState !== 'open') return;
@@ -174,6 +127,34 @@ export function useWebRTC(): UseWebRTCReturn {
     };
   }, [sendNextChunk]);
 
+  useEffect(() => {
+    const newSocket = io({ path: "/api/socket" });
+    setSocket(newSocket);
+
+    newSocket.on("peer-joined", () => {
+      if (!peerConnectionRef.current || !roomIdRef.current) return;
+      const dataChannel = peerConnectionRef.current.createDataChannel("transfer");
+      dataChannelRef.current = dataChannel;
+      handleDataChannelEvents(dataChannel);
+      peerConnectionRef.current.createOffer()
+        .then((offer) => peerConnectionRef.current?.setLocalDescription(offer))
+        .then(() => newSocket.emit("offer", { sdp: peerConnectionRef.current?.localDescription, room: roomIdRef.current }));
+    });
+
+    newSocket.on("offer", (data) => {
+      if (!peerConnectionRef.current || !roomIdRef.current) return;
+      peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.sdp))
+        .then(() => peerConnectionRef.current?.createAnswer())
+        .then((answer) => peerConnectionRef.current?.setLocalDescription(answer))
+        .then(() => newSocket.emit("answer", { sdp: peerConnectionRef.current?.localDescription, room: roomIdRef.current }));
+    });
+
+    newSocket.on("answer", (data) => { if (!peerConnectionRef.current) return; peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.sdp)); });
+    newSocket.on("ice-candidate", (data) => { if (!peerConnectionRef.current) return; peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(data.candidate)); });
+
+    return () => { newSocket.disconnect(); };
+  }, [handleDataChannelEvents]);
+
   const startConnection = useCallback((roomId: string) => {
     if (!socket) return;
     roomIdRef.current = roomId;
@@ -183,6 +164,25 @@ export function useWebRTC(): UseWebRTCReturn {
     pc.ondatachannel = (e) => { dataChannelRef.current = e.channel; handleDataChannelEvents(e.channel); };
     socket.emit("join-room", roomId);
   }, [socket, handleDataChannelEvents]);
+
+  const sendText = useCallback((text: string) => {
+    if (dataChannelRef.current?.readyState !== "open") return;
+    const id = Date.now().toString();
+    const newTextItem: HistoryItem = { id, direction: "sent", type: "text", payload: text };
+    setHistory(prev => [newTextItem, ...prev]);
+    dataChannelRef.current.send(JSON.stringify({ type: "text", payload: text, id }));
+  }, []);
+
+  const sendFile = useCallback((file: File) => {
+    if (dataChannelRef.current?.readyState !== 'open') return;
+    const id = Date.now().toString();
+    fileToSendRef.current = { file, id };
+    sendOffsetRef.current = 0;
+    updateProgress(id, 0);
+
+    const metadata: FileMetadata = { name: file.name, type: file.type, size: file.size };
+    dataChannelRef.current.send(JSON.stringify({ type: "file-meta", payload: metadata, id }));
+  }, []);
 
   return { isConnected, history, transferProgress, startConnection, sendText, sendFile };
 }
