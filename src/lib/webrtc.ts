@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { io, Socket } from "socket.io-client";
+import Ably from "ably";
 
 const CHUNK_SIZE = 64 * 1024; // 64 KB
 
@@ -11,7 +11,6 @@ type FileMetadata = {
   size: number;
 };
 
-// This type now represents any item in the history, sent or received.
 export type HistoryItem = {
   id: string;
   direction: "sent" | "received";
@@ -30,27 +29,36 @@ export type HistoryItem = {
 interface UseWebRTCReturn {
   isConnected: boolean;
   history: HistoryItem[];
-  transferProgress: { [id: string]: number }; // Progress per item
+  transferProgress: { [id: string]: number };
   startConnection: (roomId: string) => void;
   sendText: (text: string) => void;
   sendFile: (file: File) => void;
 }
 
 export function useWebRTC(): UseWebRTCReturn {
-  const [socket, setSocket] = useState<Socket | null>(null);
+  const [ably, setAbly] = useState<Ably.Realtime | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [transferProgress, setTransferProgress] = useState<{ [id: string]: number }>({});
 
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
-  const roomIdRef = useRef<string | null>(null);
+  const channelRef = useRef<Ably.Types.RealtimeChannelPromise | null>(null);
 
   const fileToSendRef = useRef<{ file: File; id: string } | null>(null);
   const sendOffsetRef = useRef<number>(0);
   
   const incomingFileRef = useRef<{ id: string; metadata: FileMetadata; data: ArrayBuffer[] } | null>(null);
   const receivedSizeRef = useRef<number>(0);
+
+  useEffect(() => {
+    const ablyClient = new Ably.Realtime({ authUrl: '/api/ably-auth' });
+    setAbly(ablyClient);
+
+    return () => {
+      ablyClient.close();
+    };
+  }, []);
 
   const updateProgress = (id: string, progress: number) => {
     setTransferProgress(prev => ({ ...prev, [id]: progress }));
@@ -127,43 +135,54 @@ export function useWebRTC(): UseWebRTCReturn {
     };
   }, [sendNextChunk]);
 
-  useEffect(() => {
-    const newSocket = io({ path: "/api/socket" });
-    setSocket(newSocket);
-
-    newSocket.on("peer-joined", () => {
-      if (!peerConnectionRef.current || !roomIdRef.current) return;
-      const dataChannel = peerConnectionRef.current.createDataChannel("transfer");
-      dataChannelRef.current = dataChannel;
-      handleDataChannelEvents(dataChannel);
-      peerConnectionRef.current.createOffer()
-        .then((offer) => peerConnectionRef.current?.setLocalDescription(offer))
-        .then(() => newSocket.emit("offer", { sdp: peerConnectionRef.current?.localDescription, room: roomIdRef.current }));
-    });
-
-    newSocket.on("offer", (data) => {
-      if (!peerConnectionRef.current || !roomIdRef.current) return;
-      peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.sdp))
-        .then(() => peerConnectionRef.current?.createAnswer())
-        .then((answer) => peerConnectionRef.current?.setLocalDescription(answer))
-        .then(() => newSocket.emit("answer", { sdp: peerConnectionRef.current?.localDescription, room: roomIdRef.current }));
-    });
-
-    newSocket.on("answer", (data) => { if (!peerConnectionRef.current) return; peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.sdp)); });
-    newSocket.on("ice-candidate", (data) => { if (!peerConnectionRef.current) return; peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(data.candidate)); });
-
-    return () => { newSocket.disconnect(); };
-  }, [handleDataChannelEvents]);
-
-  const startConnection = useCallback((roomId: string) => {
-    if (!socket) return;
-    roomIdRef.current = roomId;
+  const startConnection = useCallback(async (roomId: string) => {
+    if (!ably) return;
     const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
     peerConnectionRef.current = pc;
-    pc.onicecandidate = (e) => e.candidate && socket.emit("ice-candidate", { candidate: e.candidate, room: roomId });
-    pc.ondatachannel = (e) => { dataChannelRef.current = e.channel; handleDataChannelEvents(e.channel); };
-    socket.emit("join-room", roomId);
-  }, [socket, handleDataChannelEvents]);
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate) {
+        channelRef.current?.publish({ name: "ice-candidate", data: { candidate: e.candidate } });
+      }
+    };
+
+    pc.ondatachannel = (e) => {
+      dataChannelRef.current = e.channel;
+      handleDataChannelEvents(e.channel);
+    };
+
+    const channel = ably.channels.get(`vshare-${roomId.toUpperCase()}`);
+    channelRef.current = channel;
+
+    await channel.subscribe(async (message) => {
+      if (ably && message.clientId === ably.auth.clientId) return;
+      
+      const { name, data } = message;
+      if (name === "ice-candidate") {
+        pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+      } else if (name === "offer") {
+        if (pc.signalingState !== 'stable') return;
+        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        channel.publish({ name: "answer", data: { sdp: pc.localDescription } });
+      } else if (name === "answer") {
+        if (pc.signalingState !== 'have-local-offer') return;
+        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+      } else if (name === "peer-joined") {
+        if (pc.signalingState !== 'stable') return;
+        const dataChannel = pc.createDataChannel("transfer");
+        dataChannelRef.current = dataChannel;
+        handleDataChannelEvents(dataChannel);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        channel.publish({ name: "offer", data: { sdp: pc.localDescription } });
+      }
+    });
+
+    channel.publish({ name: "peer-joined", data: {} });
+
+  }, [ably, handleDataChannelEvents]);
 
   const sendText = useCallback((text: string) => {
     if (dataChannelRef.current?.readyState !== "open") return;
@@ -176,12 +195,24 @@ export function useWebRTC(): UseWebRTCReturn {
   const sendFile = useCallback((file: File) => {
     if (dataChannelRef.current?.readyState !== 'open') return;
     const id = Date.now().toString();
+    const metadata: FileMetadata = { name: file.name, type: file.type, size: file.size };
+
+    const newFileItem: HistoryItem = {
+      id,
+      direction: 'sent',
+      type: 'file',
+      payload: {
+        metadata,
+        data: file,
+      },
+    };
+    setHistory(prev => [newFileItem, ...prev]);
+
     fileToSendRef.current = { file, id };
     sendOffsetRef.current = 0;
     updateProgress(id, 0);
 
-    const metadata: FileMetadata = { name: file.name, type: file.type, size: file.size };
-    dataChannelRef.current.send(JSON.stringify({ type: "file-meta", payload: metadata, id }));
+    dataChannelRef.current.send(JSON.stringify({ type: 'file-meta', payload: metadata, id }));
   }, []);
 
   return { isConnected, history, transferProgress, startConnection, sendText, sendFile };

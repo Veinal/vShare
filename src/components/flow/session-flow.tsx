@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, ChangeEvent } from "react";
+import { useState, ChangeEvent, useRef } from "react";
 import Image from "next/image";
+import { Paperclip } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
@@ -12,8 +13,8 @@ import { cn } from "@/lib/utils";
 export function SessionFlow() {
   const [sessionCode, setSessionCode] = useState("");
   const [textToSend, setTextToSend] = useState("");
-  const [fileToSend, setFileToSend] = useState<File | null>(null);
   const [mode, setMode] = useState<"initial" | "connecting" | "connected">("initial");
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { isConnected, history, transferProgress, startConnection, sendText, sendFile } = useWebRTC();
 
@@ -40,15 +41,15 @@ export function SessionFlow() {
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     if (event.target.files && event.target.files[0]) {
-      setFileToSend(event.target.files[0]);
+      sendFile(event.target.files[0]);
+      if (event.target) {
+        event.target.value = "";
+      }
     }
   };
 
-  const handleSendFile = () => {
-    if (fileToSend) {
-      sendFile(fileToSend);
-      setFileToSend(null);
-    }
+  const handleAttachmentClick = () => {
+    fileInputRef.current?.click();
   };
 
   const handleDownload = (item: HistoryItem) => {
@@ -66,7 +67,7 @@ export function SessionFlow() {
 
   const renderHistoryItem = (item: HistoryItem) => {
     const progress = transferProgress[item.id];
-    const isTransferring = progress > 0 && progress < 100;
+    const isTransferring = progress != null && progress >= 0 && progress < 100;
 
     return (
       <div
@@ -136,12 +137,27 @@ export function SessionFlow() {
       </div>
       <div className="p-4 border-t bg-gray-50">
         <div className="flex items-center gap-2">
-            <Input type="text" placeholder="Type a message..." value={textToSend} onChange={(e) => setTextToSend(e.target.value)} />
-            <Button onClick={handleSendText}>Send Text</Button>
-        </div>
-        <div className="flex items-center gap-2 mt-2">
-            <Input type="file" onChange={handleFileChange} />
-            <Button onClick={handleSendFile} disabled={!fileToSend}>Send File</Button>
+          <Input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileChange}
+            className="hidden"
+          />
+          <Button variant="ghost" size="icon" onClick={handleAttachmentClick} title="Send file">
+            <Paperclip className="h-5 w-5" />
+          </Button>
+          <Input
+            type="text"
+            placeholder="Type a message..."
+            value={textToSend}
+            onChange={(e) => setTextToSend(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                handleSendText();
+              }
+            }}
+          />
+          <Button onClick={handleSendText} disabled={!textToSend.trim()}>Send</Button>
         </div>
       </div>
     </div>
