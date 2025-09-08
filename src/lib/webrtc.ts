@@ -16,6 +16,7 @@ export type HistoryItem = {
   direction: "sent" | "received";
   type: "text";
   payload: string;
+  progress?: number;
 } | {
   id: string;
   direction: "sent" | "received";
@@ -24,12 +25,12 @@ export type HistoryItem = {
     metadata: FileMetadata;
     data: Blob;
   };
+  progress?: number;
 };
 
 interface UseWebRTCReturn {
   isConnected: boolean;
   history: HistoryItem[];
-  transferProgress: { [id: string]: number };
   startConnection: (roomId: string) => void;
   sendText: (text: string) => void;
   sendFile: (file: File) => void;
@@ -39,7 +40,6 @@ export function useWebRTC(): UseWebRTCReturn {
   const [ably, setAbly] = useState<Ably.Realtime | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [history, setHistory] = useState<HistoryItem[]>([]);
-  const [transferProgress, setTransferProgress] = useState<{ [id: string]: number }>({});
 
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
@@ -60,9 +60,13 @@ export function useWebRTC(): UseWebRTCReturn {
     };
   }, []);
 
-  const updateProgress = (id: string, progress: number) => {
-    setTransferProgress(prev => ({ ...prev, [id]: progress }));
-  };
+  const updateProgress = useCallback((id: string, progress: number) => {
+    setHistory(prev => 
+      prev.map(item => 
+        item.id === id ? { ...item, progress } : item
+      )
+    );
+  }, []);
 
   const sendNextChunk = useCallback(() => {
     if (!fileToSendRef.current || !dataChannelRef.current || dataChannelRef.current.readyState !== 'open') return;
@@ -70,7 +74,8 @@ export function useWebRTC(): UseWebRTCReturn {
     const offset = sendOffsetRef.current;
 
     if (offset >= file.size) {
-      setTimeout(() => updateProgress(id, 0), 2000);
+      setTimeout(() => updateProgress(id, 100), 500);
+      setTimeout(() => updateProgress(id, -1), 2000);
       fileToSendRef.current = null;
       return;
     }
@@ -86,11 +91,11 @@ export function useWebRTC(): UseWebRTCReturn {
       }
     };
     reader.readAsArrayBuffer(chunk);
-  }, []);
+  }, [updateProgress]);
 
   const handleDataChannelEvents = useCallback((channel: RTCDataChannel) => {
     channel.onopen = () => setIsConnected(true);
-    channel.onclose = () => { setIsConnected(false); setTransferProgress({}); };
+    channel.onclose = () => { setIsConnected(false); };
     
     channel.onmessage = (event) => {
       if (typeof event.data === "string") {
@@ -100,9 +105,16 @@ export function useWebRTC(): UseWebRTCReturn {
             setHistory(prev => [{ id: msg.id, direction: "received", type: "text", payload: msg.payload }, ...prev]);
             break;
           case "file-meta":
+            const newFileItem: HistoryItem = {
+              id: msg.id,
+              direction: "received",
+              type: "file",
+              payload: { metadata: msg.payload, data: new Blob() },
+              progress: 0,
+            };
+            setHistory(prev => [newFileItem, ...prev]);
             incomingFileRef.current = { id: msg.id, metadata: msg.payload, data: [] };
             receivedSizeRef.current = 0;
-            updateProgress(msg.id, 0);
             channel.send(JSON.stringify({ type: "file-ack", id: msg.id }));
             break;
           case "file-ack":
@@ -116,24 +128,26 @@ export function useWebRTC(): UseWebRTCReturn {
           const { id, metadata, data } = incomingFileRef.current;
           data.push(event.data);
           receivedSizeRef.current += event.data.byteLength;
-          channel.send(JSON.stringify({ type: "file-ack", id }));
-
+          
           const progress = Math.round((receivedSizeRef.current / metadata.size) * 100);
           updateProgress(id, progress);
 
+          channel.send(JSON.stringify({ type: "file-ack", id }));
+
           if (receivedSizeRef.current >= metadata.size) {
             const fileBlob = new Blob(data, { type: metadata.type });
-            const newFile: HistoryItem = { id, direction: "received", type: "file", payload: { metadata, data: fileBlob } };
-            setHistory(prev => [newFile, ...prev]);
-            
+            setHistory(prev => 
+              prev.map(item => 
+                item.id === id ? { ...item, payload: { ...item.payload, data: fileBlob }, progress: -1 } : item
+              )
+            );
             incomingFileRef.current = null;
             receivedSizeRef.current = 0;
-            setTimeout(() => updateProgress(id, 0), 2000);
           }
         }
       }
     };
-  }, [sendNextChunk]);
+  }, [sendNextChunk, updateProgress]);
 
   const startConnection = useCallback(async (roomId: string) => {
     if (!ably) return;
@@ -205,15 +219,15 @@ export function useWebRTC(): UseWebRTCReturn {
         metadata,
         data: file,
       },
+      progress: 0,
     };
     setHistory(prev => [newFileItem, ...prev]);
 
     fileToSendRef.current = { file, id };
     sendOffsetRef.current = 0;
-    updateProgress(id, 0);
 
     dataChannelRef.current.send(JSON.stringify({ type: 'file-meta', payload: metadata, id }));
   }, []);
 
-  return { isConnected, history, transferProgress, startConnection, sendText, sendFile };
+  return { isConnected, history, startConnection, sendText, sendFile };
 }

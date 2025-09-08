@@ -16,7 +16,7 @@ export function SessionFlow() {
   const [mode, setMode] = useState<"initial" | "connecting" | "connected">("initial");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const { isConnected, history, transferProgress, startConnection, sendText, sendFile } = useWebRTC();
+  const { isConnected, history, startConnection, sendText, sendFile } = useWebRTC();
 
   const handleStart = () => {
     const newCode = generateSessionCode();
@@ -66,8 +66,8 @@ export function SessionFlow() {
   };
 
   const renderHistoryItem = (item: HistoryItem) => {
-    const progress = transferProgress[item.id];
-    const isTransferring = progress != null && progress >= 0 && progress < 100;
+    const progress = item.progress;
+    const isTransferring = typeof progress === 'number' && progress >= 0;
 
     return (
       <div
