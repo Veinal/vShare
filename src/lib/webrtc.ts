@@ -34,6 +34,7 @@ interface UseWebRTCReturn {
   startConnection: (roomId: string) => void;
   sendText: (text: string) => void;
   sendFile: (file: File) => void;
+  endConnection: () => void;
 }
 
 export function useWebRTC(): UseWebRTCReturn {
@@ -229,5 +230,23 @@ export function useWebRTC(): UseWebRTCReturn {
     dataChannelRef.current.send(JSON.stringify({ type: 'file-meta', payload: metadata, id }));
   }, []);
 
-  return { isConnected, history, startConnection, sendText, sendFile };
+  const endConnection = useCallback(() => {
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
+    }
+    if (dataChannelRef.current) {
+      dataChannelRef.current.close();
+      dataChannelRef.current = null;
+    }
+    if (channelRef.current) {
+      channelRef.current.unsubscribe();
+      channelRef.current.detach();
+      channelRef.current = null;
+    }
+    setIsConnected(false);
+    setHistory([]);
+  }, []);
+
+  return { isConnected, history, startConnection, sendText, sendFile, endConnection };
 }
