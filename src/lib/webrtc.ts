@@ -191,7 +191,18 @@ export function useWebRTC(): UseWebRTCReturn {
       } else if (name === "answer") {
         if (pc.signalingState !== 'have-local-offer') return;
         await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-      } else if (name === "peer-joined") {
+      }
+    });
+
+    channel.presence.subscribe('enter', async (member) => {
+      if (ably && member.clientId === ably.auth.clientId) return;
+
+      const members = await channel.presence.get();
+      const otherMembers = members.filter(m => m.clientId !== ably?.auth.clientId);
+
+      if (otherMembers.length > 0) {
+        // Simplified: the existing member initiates the offer to the new member.
+        // A more robust solution might involve a leader election based on clientId.
         if (pc.signalingState !== 'stable') return;
         const dataChannel = pc.createDataChannel("transfer");
         dataChannelRef.current = dataChannel;
@@ -202,7 +213,7 @@ export function useWebRTC(): UseWebRTCReturn {
       }
     });
 
-    channel.publish({ name: "peer-joined", data: {} });
+    await channel.presence.enter();
 
   }, [ably, handleDataChannelEvents]);
 

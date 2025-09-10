@@ -1,41 +1,84 @@
-"use client";
+'use client';
 
-import { useState, ChangeEvent, useRef } from "react";
-import Image from "next/image";
-import { Paperclip, Loader2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Progress } from "@/components/ui/progress";
-import { useWebRTC, HistoryItem } from "@/lib/webrtc";
-import { generateSessionCode } from "@/lib/code-generator";
-import { cn } from "@/lib/utils";
+import { useState, ChangeEvent, useRef, useEffect } from 'react';
+import Image from 'next/image';
+import { Paperclip, Loader2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Progress } from '@/components/ui/progress';
+import { useWebRTC, HistoryItem } from '@/lib/webrtc';
+import { generateSessionCode } from '@/lib/code-generator';
+import { cn } from '@/lib/utils';
 
 export function SessionFlow() {
-  const [sessionCode, setSessionCode] = useState("");
-  const [textToSend, setTextToSend] = useState("");
-  const [mode, setMode] = useState<"initial" | "connecting" | "connected">("initial");
+  const [sessionCode, setSessionCode] = useState('');
+  const [textToSend, setTextToSend] = useState('');
+  const [mode, setMode] = useState<'initial' | 'connecting' | 'connected'>('initial');
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const { isConnected, history, startConnection, sendText, sendFile, endConnection } = useWebRTC();
+
+  useEffect(() => {
+    if (isConnected) {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+      setMode('connected');
+      setConnectionError(null);
+    }
+  }, [isConnected]);
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, []);
+
+  const cleanupConnection = () => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+    endConnection();
+    setMode('initial');
+  };
+
+  const startConnectionAttempt = (code: string) => {
+    setConnectionError(null);
+    startConnection(code);
+    setMode('connecting');
+
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+    }
+
+    timeoutRef.current = setTimeout(() => {
+      setConnectionError('Connection timed out. Please check the code and try again.');
+      cleanupConnection();
+    }, 30000);
+  };
 
   const handleStart = () => {
     const newCode = generateSessionCode();
     setSessionCode(newCode);
-    startConnection(newCode);
-    setMode("connecting");
+    startConnectionAttempt(newCode);
   };
 
   const handleJoin = () => {
     if (sessionCode) {
-      startConnection(sessionCode.toUpperCase());
-      setMode("connecting");
+      startConnectionAttempt(sessionCode.toUpperCase());
     }
   };
 
   const handleSendText = () => {
     if (textToSend.trim()) {
       sendText(textToSend);
-      setTextToSend("");
+      setTextToSend('');
     }
   };
 
@@ -43,7 +86,7 @@ export function SessionFlow() {
     if (event.target.files && event.target.files[0]) {
       sendFile(event.target.files[0]);
       if (event.target) {
-        event.target.value = "";
+        event.target.value = '';
       }
     }
   };
@@ -53,21 +96,16 @@ export function SessionFlow() {
   };
 
   const handleDownload = (item: HistoryItem) => {
-    if (item.type !== "file") return;
+    if (item.type !== 'file') return;
     const blob = item.payload.data;
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
+    const a = document.createElement('a');
     a.href = url;
     a.download = item.payload.metadata.name;
     document.body.appendChild(a);
     a.click();
     window.URL.revokeObjectURL(url);
     a.remove();
-  };
-
-  const handleEndSession = () => {
-    endConnection();
-    setMode("initial");
   };
 
   const renderHistoryItem = (item: HistoryItem) => {
@@ -78,13 +116,13 @@ export function SessionFlow() {
       <div
         key={item.id}
         className={cn(
-          "flex flex-col w-fit max-w-xs md:max-w-md p-3 rounded-xl shadow-md",
-          item.direction === "sent"
-            ? "bg-blue-600 text-white self-end rounded-br-none"
-            : "bg-white text-slate-800 self-start rounded-bl-none"
+          'flex flex-col w-fit max-w-xs md:max-w-md p-3 rounded-xl shadow-md',
+          item.direction === 'sent'
+            ? 'bg-blue-600 text-white self-end rounded-br-none'
+            : 'bg-white text-slate-800 self-start rounded-bl-none'
         )}
       >
-        {item.type === "text" ? (
+        {item.type === 'text' ? (
           <p className="break-words">{item.payload}</p>
         ) : (
           <div className="flex flex-col items-start gap-2">
@@ -92,9 +130,7 @@ export function SessionFlow() {
             {isTransferring ? (
               <div className="w-full space-y-1">
                 <Progress value={progress} className="h-2 [&>*]:bg-white" />
-                <p className="text-xs font-mono">
-                  {progress}%
-                </p>
+                <p className="text-xs font-mono">{progress}%</p>
               </div>
             ) : (
               <Button
@@ -111,7 +147,7 @@ export function SessionFlow() {
     );
   };
 
-  if (!isConnected && mode !== "connecting") {
+  if (mode === 'initial') {
     return (
       <div className="w-full max-w-md bg-white rounded-2xl shadow-xl p-4 sm:p-8 space-y-6">
         <div className="text-center">
@@ -119,12 +155,21 @@ export function SessionFlow() {
           <h1 className="text-3xl sm:text-4xl font-bold text-slate-800">V-Share</h1>
           <p className="text-slate-500 mt-2">Instant, secure peer-to-peer file sharing.</p>
         </div>
-        
+
+        {connectionError && (
+          <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg relative" role="alert">
+            <strong className="font-bold">Error: </strong>
+            <span className="block sm:inline">{connectionError}</span>
+          </div>
+        )}
+
         <div className="space-y-4">
           <span className="flex justify-center items-center">
-            <Button className="w-full sm:w-1/2 bg-blue-600 hover:bg-blue-700 text-white" onClick={handleStart}>Generate Code</Button>
+            <Button className="w-full sm:w-1/2 bg-blue-600 hover:bg-blue-700 text-white" onClick={handleStart}>
+              Generate Code
+            </Button>
           </span>
-          
+
           <div className="flex items-center">
             <div className="flex-grow border-t border-slate-200"></div>
             <span className="flex-shrink mx-4 text-slate-400 text-sm">OR</span>
@@ -138,14 +183,16 @@ export function SessionFlow() {
               onChange={(e) => setSessionCode(e.target.value)}
               className="text-center text-lg tracking-wider font-mono"
             />
-            <Button className="bg-blue-600 hover:bg-blue-700 text-white" disabled={!sessionCode} onClick={handleJoin}>Join</Button>
+            <Button className="bg-blue-600 hover:bg-blue-700 text-white" disabled={!sessionCode} onClick={handleJoin}>
+              Join
+            </Button>
           </div>
         </div>
       </div>
     );
   }
 
-  if (!isConnected && mode === "connecting") {
+  if (mode === 'connecting') {
     return (
       <div className="w-full max-w-md bg-white rounded-2xl shadow-xl p-4 sm:p-8 flex flex-col items-center justify-center text-center space-y-6">
         <Loader2 className="h-16 w-16 text-blue-600 animate-spin" />
@@ -156,9 +203,11 @@ export function SessionFlow() {
           </div>
           <p className="text-xs text-slate-400">Share this code with the other device.</p>
         </div>
-        <Button variant="secondary" onClick={() => setMode("initial")}>Cancel</Button>
+        <Button variant="secondary" onClick={cleanupConnection}>
+          Cancel
+        </Button>
       </div>
-    )
+    );
   }
 
   return (
@@ -170,15 +219,22 @@ export function SessionFlow() {
             <div className="text-sm font-mono text-slate-500 bg-slate-200 px-3 py-1 rounded-full">
               {sessionCode}
             </div>
-            <Button size="sm" onClick={handleEndSession} variant="ghost" className="text-red-600 hover:bg-red-100 border border-red-200 font-semibold rounded-full px-4 py-1 transition">
+            <Button
+              size="sm"
+              onClick={cleanupConnection}
+              variant="ghost"
+              className="text-red-600 hover:bg-red-100 border border-red-200 font-semibold rounded-full px-4 py-1 transition"
+            >
               End Session
             </Button>
           </div>
         </div>
       </header>
-      
+
       <div className="flex-1 flex flex-col-reverse p-4 md:p-6 gap-4 overflow-y-auto bg-slate-100">
-        {history.length > 0 ? history.map(renderHistoryItem) : (
+        {history.length > 0 ? (
+          history.map(renderHistoryItem)
+        ) : (
           <div className="text-center self-center">
             <Image src="/window.svg" alt="Empty History" width={96} height={96} className="mx-auto opacity-40" />
             <p className="mt-4 text-slate-500">History will appear here.</p>
@@ -188,13 +244,14 @@ export function SessionFlow() {
 
       <div className="p-4 border-t bg-white">
         <div className="flex items-center gap-3">
-          <Input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileChange}
-            className="hidden"
-          />
-          <Button variant="ghost" size="icon" onClick={handleAttachmentClick} title="Send file" className="flex-shrink-0 h-10 w-10 rounded-full hover:bg-slate-100 text-slate-500">
+          <Input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" />
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handleAttachmentClick}
+            title="Send file"
+            className="flex-shrink-0 h-10 w-10 rounded-full hover:bg-slate-100 text-slate-500"
+          >
             <Paperclip className="h-5 w-5" />
           </Button>
           <Input
@@ -211,7 +268,21 @@ export function SessionFlow() {
             className="flex-grow h-10 rounded-full bg-slate-100 px-4 focus-visible:ring-1 focus-visible:ring-blue-600 border-transparent"
           />
           <Button onClick={handleSendText} disabled={!textToSend.trim()} className="flex-shrink-0 h-10 w-10 rounded-full">
-            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="24"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-5 w-5"
+            >
+              <path d="m22 2-7 20-4-9-9-4Z" />
+              <path d="M22 2 11 13" />
+            </svg>
           </Button>
         </div>
       </div>
