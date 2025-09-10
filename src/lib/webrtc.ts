@@ -44,7 +44,7 @@ export function useWebRTC(): UseWebRTCReturn {
 
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
-  const channelRef = useRef<Ably.Types.RealtimeChannelPromise | null>(null);
+  const channelRef = useRef<Ably.RealtimeChannel | null>(null);
 
   const fileToSendRef = useRef<{ file: File; id: string } | null>(null);
   const sendOffsetRef = useRef<number>(0);
@@ -139,7 +139,9 @@ export function useWebRTC(): UseWebRTCReturn {
             const fileBlob = new Blob(data, { type: metadata.type });
             setHistory(prev => 
               prev.map(item => 
-                item.id === id ? { ...item, payload: { ...item.payload, data: fileBlob }, progress: -1 } : item
+                (item.id === id && item.type === 'file')
+                  ? { ...item, payload: { ...item.payload, data: fileBlob }, progress: -1 }
+                  : item
               )
             );
             incomingFileRef.current = null;
@@ -152,7 +154,12 @@ export function useWebRTC(): UseWebRTCReturn {
 
   const startConnection = useCallback(async (roomId: string) => {
     if (!ably) return;
-    const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:global.stun.twilio.com:3478" },
+      ],
+    });
     peerConnectionRef.current = pc;
 
     pc.onicecandidate = (e) => {
