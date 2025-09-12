@@ -3,7 +3,7 @@
 import { useState, useRef, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 
-const SIGNALING_SERVER_URL = 'https://v-share-signaling-server.onrender.com';
+const SIGNALING_SERVER_URL = 'https://vshare-o6b1.onrender.com';
 
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
