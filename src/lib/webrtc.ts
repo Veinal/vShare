@@ -1,252 +1,236 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
-import Ably from "ably";
+import { useState, useRef, useCallback } from 'react';
+import { io, Socket } from 'socket.io-client';
 
-const CHUNK_SIZE = 64 * 1024; // 64 KB
+const SIGNALING_SERVER_URL = 'https://v-share-signaling-server.onrender.com';
 
-type FileMetadata = {
-  name: string;
-  type: string;
-  size: number;
-};
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+];
 
-export type HistoryItem = {
-  id: string;
-  direction: "sent" | "received";
-  type: "text";
-  payload: string;
+export interface HistoryItem {
+  id: number;
+  type: 'text' | 'file';
+  direction: 'sent' | 'received';
+  payload: any;
   progress?: number;
-} | {
-  id: string;
-  direction: "sent" | "received";
-  type: "file";
-  payload: {
-    metadata: FileMetadata;
-    data: Blob;
-  };
-  progress?: number;
-};
-
-interface UseWebRTCReturn {
-  isConnected: boolean;
-  history: HistoryItem[];
-  startConnection: (roomId: string) => void;
-  sendText: (text: string) => void;
-  sendFile: (file: File) => void;
-  endConnection: () => void;
 }
 
-export function useWebRTC(): UseWebRTCReturn {
-  const [ably, setAbly] = useState<Ably.Realtime | null>(null);
+export interface FileMetadata {
+    name: string;
+    type: string;
+    size: number;
+}
+
+// Define a new interface for the hook's return value for clarity
+export interface WebRTCHook {
+    isConnected: boolean;
+    history: HistoryItem[];
+    startConnection: (sessionCode: string, isCreator: boolean) => void;
+    sendText: (text: string) => void;
+    sendFile: (file: File) => void;
+    endConnection: () => void;
+}
+
+export function useWebRTC(): WebRTCHook {
   const [isConnected, setIsConnected] = useState(false);
   const [history, setHistory] = useState<HistoryItem[]>([]);
-
-  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
-  const dataChannelRef = useRef<RTCDataChannel | null>(null);
-  const channelRef = useRef<Ably.Types.RealtimeChannelPromise | null>(null);
-
-  const fileToSendRef = useRef<{ file: File; id: string } | null>(null);
-  const sendOffsetRef = useRef<number>(0);
   
-  const incomingFileRef = useRef<{ id: string; metadata: FileMetadata; data: ArrayBuffer[] } | null>(null);
-  const receivedSizeRef = useRef<number>(0);
+  const socketRef = useRef<Socket | null>(null);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const dcRef = useRef<RTCDataChannel | null>(null);
+  
+  // Refs for file transfer state
+  const fileSendProgressRef = useRef<{[fileName: string]: number}>({});
+  const receivingFileRef = useRef<{ metadata: FileMetadata, buffer: ArrayBuffer[] } | null>(null);
 
-  useEffect(() => {
-    const ablyClient = new Ably.Realtime({ authUrl: '/api/ably-auth' });
-    setAbly(ablyClient);
-
-    return () => {
-      ablyClient.close();
-    };
+  const updateFileProgress = useCallback((fileName: string, progress: number | undefined) => {
+    setHistory(prev => prev.map(item => 
+        item.type === 'file' && item.payload.metadata.name === fileName 
+        ? { ...item, progress } 
+        : item
+    ));
   }, []);
 
-  const updateProgress = useCallback((id: string, progress: number) => {
-    setHistory(prev => 
-      prev.map(item => 
-        item.id === id ? { ...item, progress } : item
-      )
-    );
-  }, []);
-
-  const sendNextChunk = useCallback(() => {
-    if (!fileToSendRef.current || !dataChannelRef.current || dataChannelRef.current.readyState !== 'open') return;
-    const { file, id } = fileToSendRef.current;
-    const offset = sendOffsetRef.current;
-
-    if (offset >= file.size) {
-      setTimeout(() => updateProgress(id, 100), 500);
-      setTimeout(() => updateProgress(id, -1), 2000);
-      fileToSendRef.current = null;
-      return;
+  const handleDataChannelMessage = useCallback((event: MessageEvent) => {
+    try {
+        const message = JSON.parse(event.data);
+        if (message.type === 'file-start') {
+            receivingFileRef.current = { metadata: message.metadata, buffer: [] };
+            setHistory(prev => [...prev, { id: Date.now(), type: 'file', direction: 'received', payload: { metadata: message.metadata, data: new Blob() }, progress: 0 }]);
+        } else if (message.type === 'file-end') {
+            if (!receivingFileRef.current) return;
+            const file = new Blob(receivingFileRef.current.buffer, { type: receivingFileRef.current.metadata.type });
+            const metadata = receivingFileRef.current.metadata;
+            setHistory(prev => prev.map(item => 
+                item.type === 'file' && item.payload.metadata.name === metadata.name 
+                ? { ...item, payload: { ...item.payload, data: file }, progress: undefined } 
+                : item
+            ));
+            receivingFileRef.current = null;
+        } else if (message.type === 'text') {
+            setHistory(prev => [...prev, { id: Date.now(), type: 'text', direction: 'received', payload: message.payload }]);
+        }
+    } catch (error) { // This part handles binary file chunks
+        if (receivingFileRef.current) {
+            receivingFileRef.current.buffer.push(event.data);
+            const receivedSize = receivingFileRef.current.buffer.reduce((acc, chunk) => acc + chunk.byteLength, 0);
+            const progress = Math.round((receivedSize / receivingFileRef.current.metadata.size) * 100);
+            updateFileProgress(receivingFileRef.current.metadata.name, progress);
+        }
     }
+  }, [updateFileProgress]);
 
-    const chunk = file.slice(offset, offset + CHUNK_SIZE);
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      if (event.target?.result && dataChannelRef.current) {
-        dataChannelRef.current.send(event.target.result as ArrayBuffer);
-        sendOffsetRef.current += chunk.size;
-        const progress = Math.round((sendOffsetRef.current / file.size) * 100);
-        updateProgress(id, progress);
-      }
+  const setupDataChannel = useCallback((dc: RTCDataChannel) => {
+    dc.onopen = () => {
+      console.log('Data channel open');
+      setIsConnected(true);
     };
-    reader.readAsArrayBuffer(chunk);
-  }, [updateProgress]);
-
-  const handleDataChannelEvents = useCallback((channel: RTCDataChannel) => {
-    channel.onopen = () => setIsConnected(true);
-    channel.onclose = () => { setIsConnected(false); };
-    
-    channel.onmessage = (event) => {
-      if (typeof event.data === "string") {
-        const msg = JSON.parse(event.data);
-        switch (msg.type) {
-          case "text":
-            setHistory(prev => [{ id: msg.id, direction: "received", type: "text", payload: msg.payload }, ...prev]);
-            break;
-          case "file-meta":
-            const newFileItem: HistoryItem = {
-              id: msg.id,
-              direction: "received",
-              type: "file",
-              payload: { metadata: msg.payload, data: new Blob() },
-              progress: 0,
-            };
-            setHistory(prev => [newFileItem, ...prev]);
-            incomingFileRef.current = { id: msg.id, metadata: msg.payload, data: [] };
-            receivedSizeRef.current = 0;
-            channel.send(JSON.stringify({ type: "file-ack", id: msg.id }));
-            break;
-          case "file-ack":
-            if (fileToSendRef.current && fileToSendRef.current.id === msg.id) {
-              sendNextChunk();
-            }
-            break;
-        }
-      } else if (event.data instanceof ArrayBuffer) {
-        if (incomingFileRef.current) {
-          const { id, metadata, data } = incomingFileRef.current;
-          data.push(event.data);
-          receivedSizeRef.current += event.data.byteLength;
-          
-          const progress = Math.round((receivedSizeRef.current / metadata.size) * 100);
-          updateProgress(id, progress);
-
-          channel.send(JSON.stringify({ type: "file-ack", id }));
-
-          if (receivedSizeRef.current >= metadata.size) {
-            const fileBlob = new Blob(data, { type: metadata.type });
-            setHistory(prev => 
-              prev.map(item => 
-                item.id === id ? { ...item, payload: { ...item.payload, data: fileBlob }, progress: -1 } : item
-              )
-            );
-            incomingFileRef.current = null;
-            receivedSizeRef.current = 0;
-          }
-        }
-      }
+    dc.onclose = () => {
+      console.log('Data channel closed');
+      // Use endConnection to clean up everything
+      endConnection();
     };
-  }, [sendNextChunk, updateProgress]);
-
-  const startConnection = useCallback(async (roomId: string) => {
-    if (!ably) return;
-    const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
-    peerConnectionRef.current = pc;
-
-    pc.onicecandidate = (e) => {
-      if (e.candidate) {
-        channelRef.current?.publish({ name: "ice-candidate", data: { candidate: e.candidate } });
-      }
-    };
-
-    pc.ondatachannel = (e) => {
-      dataChannelRef.current = e.channel;
-      handleDataChannelEvents(e.channel);
-    };
-
-    const channel = ably.channels.get(`vshare-${roomId.toUpperCase()}`);
-    channelRef.current = channel;
-
-    await channel.subscribe(async (message) => {
-      if (ably && message.clientId === ably.auth.clientId) return;
-      
-      const { name, data } = message;
-      if (name === "ice-candidate") {
-        pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-      } else if (name === "offer") {
-        if (pc.signalingState !== 'stable') return;
-        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        channel.publish({ name: "answer", data: { sdp: pc.localDescription } });
-      } else if (name === "answer") {
-        if (pc.signalingState !== 'have-local-offer') return;
-        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-      } else if (name === "peer-joined") {
-        if (pc.signalingState !== 'stable') return;
-        const dataChannel = pc.createDataChannel("transfer");
-        dataChannelRef.current = dataChannel;
-        handleDataChannelEvents(dataChannel);
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        channel.publish({ name: "offer", data: { sdp: pc.localDescription } });
-      }
-    });
-
-    channel.publish({ name: "peer-joined", data: {} });
-
-  }, [ably, handleDataChannelEvents]);
-
-  const sendText = useCallback((text: string) => {
-    if (dataChannelRef.current?.readyState !== "open") return;
-    const id = Date.now().toString();
-    const newTextItem: HistoryItem = { id, direction: "sent", type: "text", payload: text };
-    setHistory(prev => [newTextItem, ...prev]);
-    dataChannelRef.current.send(JSON.stringify({ type: "text", payload: text, id }));
-  }, []);
-
-  const sendFile = useCallback((file: File) => {
-    if (dataChannelRef.current?.readyState !== 'open') return;
-    const id = Date.now().toString();
-    const metadata: FileMetadata = { name: file.name, type: file.type, size: file.size };
-
-    const newFileItem: HistoryItem = {
-      id,
-      direction: 'sent',
-      type: 'file',
-      payload: {
-        metadata,
-        data: file,
-      },
-      progress: 0,
-    };
-    setHistory(prev => [newFileItem, ...prev]);
-
-    fileToSendRef.current = { file, id };
-    sendOffsetRef.current = 0;
-
-    dataChannelRef.current.send(JSON.stringify({ type: 'file-meta', payload: metadata, id }));
-  }, []);
+    dc.onmessage = handleDataChannelMessage;
+    dcRef.current = dc;
+  }, [handleDataChannelMessage]);
 
   const endConnection = useCallback(() => {
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
+    if (pcRef.current) {
+      pcRef.current.close();
+      pcRef.current = null;
     }
-    if (dataChannelRef.current) {
-      dataChannelRef.current.close();
-      dataChannelRef.current = null;
-    }
-    if (channelRef.current) {
-      channelRef.current.unsubscribe();
-      channelRef.current.detach();
-      channelRef.current = null;
+    if (socketRef.current) {
+      socketRef.current.disconnect();
+      socketRef.current = null;
     }
     setIsConnected(false);
     setHistory([]);
+    console.log("Connection ended and cleaned up.");
   }, []);
+
+  const startConnection = useCallback((sessionCode: string, isCreator: boolean) => {
+    // Prevent multiple connections
+    if (socketRef.current) return;
+
+    const socket = io(SIGNALING_SERVER_URL);
+    socketRef.current = socket;
+
+    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    pcRef.current = pc;
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        socket.emit('webrtc-ice-candidate', { candidate: event.candidate, sessionCode });
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+        console.log(`Connection state: ${pc.connectionState}`);
+        if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+            endConnection();
+        }
+    };
+
+    if (isCreator) {
+      const dc = pc.createDataChannel('data');
+      setupDataChannel(dc);
+      
+      socket.emit('create-and-join', sessionCode);
+      socket.on('session-created', async () => {
+          console.log('Session created on server.');
+      });
+      socket.on('peer-joined', async () => {
+        console.log('Peer joined, creating offer...');
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        socket.emit('webrtc-offer', { sdp: offer, sessionCode });
+      });
+    } else { // Is Joiner
+      pc.ondatachannel = (event) => {
+        console.log('Received data channel');
+        setupDataChannel(event.channel);
+      };
+      socket.emit('join-session', sessionCode);
+    }
+
+    socket.on('webrtc-offer', async (sdp) => {
+      console.log('Received offer, creating answer...');
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit('webrtc-answer', { sdp: answer, sessionCode });
+    });
+
+    socket.on('webrtc-answer', async (sdp) => {
+      console.log('Received answer.');
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    });
+
+    socket.on('webrtc-ice-candidate', (candidate) => {
+      pc.addIceCandidate(new RTCIceCandidate(candidate));
+    });
+
+    socket.on('session-error', (message) => {
+        alert(`Session error: ${message}`);
+        endConnection();
+    });
+
+  }, [setupDataChannel, endConnection]);
+
+  const sendText = (text: string) => {
+    if (dcRef.current?.readyState === 'open') {
+      dcRef.current.send(JSON.stringify({ type: 'text', payload: text }));
+      setHistory(prev => [...prev, { id: Date.now(), type: 'text', direction: 'sent', payload: text }]);
+    }
+  };
+
+  const sendFile = (file: File) => {
+    const dataChannel = dcRef.current;
+    if (dataChannel && dataChannel.readyState === 'open') {
+        const CHUNK_SIZE = 64 * 1024; // 64KB
+        const metadata = { name: file.name, type: file.type, size: file.size };
+        
+        dataChannel.send(JSON.stringify({ type: 'file-start', metadata }));
+        setHistory(prev => [...prev, { id: Date.now(), type: 'file', direction: 'sent', payload: { metadata, data: new Blob() }, progress: 0 }]);
+
+        let offset = 0;
+        const reader = new FileReader();
+
+        reader.onload = (e) => {
+            if (!e.target?.result || !dataChannel || dataChannel.readyState !== 'open') return;
+            
+            const chunk = e.target.result as ArrayBuffer;
+            // Backpressure handling
+            if (dataChannel.bufferedAmount > dataChannel.bufferedAmountLowThreshold) {
+                setTimeout(() => { if(reader.onload) reader.onload(e); }, 100);
+                return;
+            }
+
+            dataChannel.send(chunk);
+            offset += chunk.byteLength;
+            
+            const progress = Math.round((offset / file.size) * 100);
+            updateFileProgress(file.name, progress);
+
+            if (offset < file.size) {
+                readSlice(offset);
+            } else {
+                dataChannel.send(JSON.stringify({ type: 'file-end' }));
+                // Final progress update to show completion before download
+                updateFileProgress(file.name, undefined);
+            }
+        };
+
+        const readSlice = (o: number) => {
+            const slice = file.slice(o, o + CHUNK_SIZE);
+            reader.readAsArrayBuffer(slice);
+        };
+        readSlice(0);
+    }
+  };
 
   return { isConnected, history, startConnection, sendText, sendFile, endConnection };
 }
