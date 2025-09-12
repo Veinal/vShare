@@ -1,13 +1,13 @@
 const adjectives = [
-  "red", "blue", "green", "yellow", "purple", "orange", "pink", "black", "white",
-  "quick", "slow", "big", "small", "loud", "quiet", "happy", "sad", "bright",
-  "dark", "clever", "brave", "calm", "eager", "fierce", "gentle", "jolly",
+  "Red", "Blue", "Green", "Yellow", "Purple", "Orange", "Pink", "Black", "White", "Gray",
+  "Brave", "Calm", "Eager", "Fancy", "Gentle", "Happy", "Jolly", "Kind", "Lively", "Merry",
+  "Nice", "Proud", "Silly", "Witty", "Zealous", "Quick", "Quiet", "Sunny", "Cozy", "Vivid"
 ];
 
 const nouns = [
-  "cat", "dog", "fox", "lion", "tiger", "bear", "bird", "fish", "wolf", "horse",
-  "ant", "bee", "cow", "duck", "elk", "frog", "goat", "hawk", "jay", "kiwi",
-  "lark", "mule", "newt", "owl", "pig", "rat", "swan", "toad", "vole", "yak",
+  "Lion", "Tiger", "Bear", "Wolf", "Fox", "Eagle", "Hawk", "Shark", "Puma", "Jaguar",
+  "Cat", "Dog", "Bird", "Fish", "Horse", "Mouse", "Rabbit", "Goat", "Duck", "Panda",
+  "Sun", "Moon", "Star", "Cloud", "River", "Ocean", "Flame", "Stone", "Tree", "Flower"
 ];
 
 function getRandomElement<T>(arr: T[]): T {
@@ -17,6 +17,6 @@ function getRandomElement<T>(arr: T[]): T {
 export function generateSessionCode(): string {
   const adjective = getRandomElement(adjectives);
   const noun = getRandomElement(nouns);
-  const number = Math.floor(Math.random() * 100);
+  const number = Math.floor(100 + Math.random() * 900); // 3-digit number
   return `${adjective}-${noun}-${number}`;
 }
