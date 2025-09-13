@@ -6,9 +6,27 @@ import { io, Socket } from 'socket.io-client';
 const SIGNALING_SERVER_URL = 'https://vshare-o6b1.onrender.com';
 
 const ICE_SERVERS = [
+  // STUN servers (these are correct)
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stunserver.stunprotocol.org:3478' },
+  // Correct TURN server credentials
+  { 
+    urls: 'turn:openrelay.metered.ca:80', 
+    username: 'openrelayproject', 
+    credential: 'openrelayproject' 
+  },{ 
+    urls: 'turn:openrelay.metered.ca:443', 
+    username: 'openrelayproject', 
+    credential: 'openrelayproject' 
+  },{ 
+    urls: 'turn:openrelay.metered.ca:443?transport=tcp', 
+    username: 'openrelayproject', 
+    credential: 'openrelayproject' 
+  }
 ];
+
 
 export interface HistoryItem {
   id: number;
