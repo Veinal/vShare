@@ -14,6 +14,7 @@ export function SessionFlow() {
   const [sessionCode, setSessionCode] = useState("");
   const [textToSend, setTextToSend] = useState("");
   const [mode, setMode] = useState<"initial" | "connecting" | "connected">("initial");
+  const [connectionStatus, setConnectionStatus] = useState("Waiting for peer to connect...");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
@@ -37,13 +38,13 @@ export function SessionFlow() {
   const handleStart = () => {
     const newCode = generateSessionCode().toLowerCase();
     setSessionCode(newCode);
-    startConnection(newCode, true); // isCreator = true
+    startConnection(newCode, true, setConnectionStatus); // isCreator = true
     setMode("connecting");
   };
 
   const handleJoin = () => {
     if (sessionCode) {
-      startConnection(sessionCode.toLowerCase(), false); // isCreator = false
+      startConnection(sessionCode.toLowerCase(), false, setConnectionStatus); // isCreator = false
       setMode("connecting");
     }
   };
@@ -175,7 +176,7 @@ export function SessionFlow() {
       <div className="w-full max-w-md bg-white rounded-2xl shadow-xl p-4 sm:p-8 flex flex-col items-center justify-center text-center space-y-6">
         <Loader2 className="h-16 w-16 text-blue-600 animate-spin" />
         <div>
-          <p className="text-slate-500">Waiting for peer to connect...</p>
+          <p className="text-slate-500">{connectionStatus}</p>
           <div className="text-3xl sm:text-4xl font-mono tracking-widest text-slate-800 my-4 p-4 bg-slate-100 rounded-lg">
             {sessionCode}
           </div>

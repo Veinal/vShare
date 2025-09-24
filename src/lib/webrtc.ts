@@ -46,7 +46,8 @@ export interface FileMetadata {
 export interface WebRTCHook {
     isConnected: boolean;
     history: HistoryItem[];
-    startConnection: (sessionCode: string, isCreator: boolean) => void;
+    status: string;
+    startConnection: (sessionCode: string, isCreator: boolean, onStatusUpdate: (status: string) => void) => void;
     sendText: (text: string) => void;
     sendFile: (file: File) => void;
     endConnection: () => void;
@@ -55,6 +56,7 @@ export interface WebRTCHook {
 export function useWebRTC(): WebRTCHook {
   const [isConnected, setIsConnected] = useState(false);
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [status, setStatus] = useState('');
   
   const socketRef = useRef<Socket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -101,20 +103,6 @@ export function useWebRTC(): WebRTCHook {
     }
   }, [updateFileProgress]);
 
-  const setupDataChannel = useCallback((dc: RTCDataChannel) => {
-    dc.onopen = () => {
-      console.log('Data channel open');
-      setIsConnected(true);
-    };
-    dc.onclose = () => {
-      console.log('Data channel closed');
-      // Use endConnection to clean up everything
-      endConnection();
-    };
-    dc.onmessage = handleDataChannelMessage;
-    dcRef.current = dc;
-  }, [handleDataChannelMessage]);
-
   const endConnection = useCallback(() => {
     if (pcRef.current) {
       pcRef.current.close();
@@ -126,13 +114,34 @@ export function useWebRTC(): WebRTCHook {
     }
     setIsConnected(false);
     setHistory([]);
+    setStatus('');
     console.log("Connection ended and cleaned up.");
   }, []);
 
-  const startConnection = useCallback((sessionCode: string, isCreator: boolean) => {
+  const setupDataChannel = useCallback((dc: RTCDataChannel) => {
+    dc.onopen = () => {
+      setStatus('Data channel open');
+      setIsConnected(true);
+    };
+    dc.onclose = () => {
+      setStatus('Data channel closed');
+      // Use endConnection to clean up everything
+      endConnection();
+    };
+    dc.onmessage = handleDataChannelMessage;
+    dcRef.current = dc;
+  }, [handleDataChannelMessage, endConnection]);
+
+  const startConnection = useCallback((sessionCode: string, isCreator: boolean, onStatusUpdate: (status: string) => void) => {
     // Prevent multiple connections
     if (socketRef.current) return;
 
+    const updateStatus = (newStatus: string) => {
+      setStatus(newStatus);
+      onStatusUpdate(newStatus);
+    };
+
+    updateStatus('Connecting to signaling server...');
     const socket = io(SIGNALING_SERVER_URL);
     socketRef.current = socket;
 
@@ -146,7 +155,7 @@ export function useWebRTC(): WebRTCHook {
     };
 
     pc.onconnectionstatechange = () => {
-        console.log(`Connection state: ${pc.connectionState}`);
+        updateStatus(`Connection state: ${pc.connectionState}`);
         if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
             endConnection();
         }
@@ -158,24 +167,24 @@ export function useWebRTC(): WebRTCHook {
       
       socket.emit('create-and-join', sessionCode);
       socket.on('session-created', async () => {
-          console.log('Session created on server.');
+          updateStatus('Session created on server.');
       });
       socket.on('peer-joined', async () => {
-        console.log('Peer joined, creating offer...');
+        updateStatus('Peer joined, creating offer...');
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         socket.emit('webrtc-offer', { sdp: offer, sessionCode });
       });
     } else { // Is Joiner
       pc.ondatachannel = (event) => {
-        console.log('Received data channel');
+        updateStatus('Received data channel');
         setupDataChannel(event.channel);
       };
       socket.emit('join-session', sessionCode);
     }
 
     socket.on('webrtc-offer', async (sdp) => {
-      console.log('Received offer, creating answer...');
+      updateStatus('Received offer, creating answer...');
       await pc.setRemoteDescription(new RTCSessionDescription(sdp));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
@@ -183,7 +192,7 @@ export function useWebRTC(): WebRTCHook {
     });
 
     socket.on('webrtc-answer', async (sdp) => {
-      console.log('Received answer.');
+      updateStatus('Received answer.');
       await pc.setRemoteDescription(new RTCSessionDescription(sdp));
     });
 
@@ -250,5 +259,5 @@ export function useWebRTC(): WebRTCHook {
     }
   };
 
-  return { isConnected, history, startConnection, sendText, sendFile, endConnection };
+  return { isConnected, history, status, startConnection, sendText, sendFile, endConnection };
 }
