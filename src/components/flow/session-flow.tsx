@@ -15,6 +15,8 @@ export function SessionFlow() {
   const [textToSend, setTextToSend] = useState("");
   const [mode, setMode] = useState<"initial" | "connecting" | "connected">("initial");
   const [connectionStatus, setConnectionStatus] = useState("Waiting for peer to connect...");
+  const [fileQueue, setFileQueue] = useState<File[]>([]);
+  const [isProcessingQueue, setIsProcessingQueue] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
@@ -34,6 +36,27 @@ export function SessionFlow() {
       messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
     }
   }, [history]);
+
+  useEffect(() => {
+    if (fileQueue.length > 0 && !isProcessingQueue) {
+      processQueue();
+    }
+  }, [fileQueue, isProcessingQueue]);
+
+  const processQueue = () => {
+    if (fileQueue.length === 0) {
+      setIsProcessingQueue(false);
+      return;
+    }
+
+    setIsProcessingQueue(true);
+    const file = fileQueue[0];
+    sendFile(file, () => {
+      setFileQueue(prev => prev.slice(1));
+      setIsProcessingQueue(false);
+    });
+  };
+
 
   const handleStart = () => {
     const newCode = generateSessionCode().toLowerCase();
@@ -63,8 +86,9 @@ export function SessionFlow() {
   };
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
-    if (event.target.files && event.target.files[0]) {
-      sendFile(event.target.files[0]);
+    if (event.target.files) {
+      const files = Array.from(event.target.files);
+      setFileQueue(prev => [...prev, ...files]);
       if (event.target) {
         event.target.value = "";
       }
@@ -166,6 +190,7 @@ export function SessionFlow() {
             />
             <Button className="bg-blue-600 hover:bg-blue-700 text-white" disabled={!sessionCode} onClick={handleJoin}>Join</Button>
           </div>
+          <p className="text-xs text-center text-slate-500 pt-2">It may take 15-30 seconds for the devices to connect.</p>
         </div>
       </div>
     );
@@ -219,6 +244,7 @@ export function SessionFlow() {
             ref={fileInputRef}
             onChange={handleFileChange}
             className="hidden"
+            multiple
           />
           <Button variant="ghost" size="icon" onClick={handleAttachmentClick} title="Send file" className="flex-shrink-0 h-10 w-10 rounded-full hover:bg-slate-100 text-slate-500">
             <Paperclip className="h-5 w-5" />
