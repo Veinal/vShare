@@ -49,7 +49,7 @@ export interface WebRTCHook {
     status: string;
     startConnection: (sessionCode: string, isCreator: boolean, onStatusUpdate: (status: string) => void) => void;
     sendText: (text: string) => void;
-    sendFile: (file: File) => void;
+    sendFile: (file: File, onComplete: () => void) => void;
     endConnection: () => void;
 }
 
@@ -214,7 +214,7 @@ export function useWebRTC(): WebRTCHook {
     }
   };
 
-  const sendFile = (file: File) => {
+  const sendFile = (file: File, onComplete: () => void) => {
     const dataChannel = dcRef.current;
     if (dataChannel && dataChannel.readyState === 'open') {
         const CHUNK_SIZE = 64 * 1024; // 64KB
@@ -248,6 +248,7 @@ export function useWebRTC(): WebRTCHook {
                 dataChannel.send(JSON.stringify({ type: 'file-end' }));
                 // Final progress update to show completion before download
                 updateFileProgress(file.name, undefined);
+                onComplete();
             }
         };
 
